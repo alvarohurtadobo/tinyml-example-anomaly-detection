@@ -9,7 +9,7 @@
  */
 
 // Library includes
-#include <SPI.h>
+// Note: Using manual SPI implementation for MAX6675 instead of SPI library
 
 // Local includes
 #include "md_model-moving.h"
@@ -45,25 +45,29 @@ float readMAX6675() {
   
   // Pull CS low to start communication
   digitalWrite(TEMP_CS_PIN, LOW);
-  delayMicroseconds(1); // Small delay for stability
+  delayMicroseconds(100); // Small delay for stability (MAX6675 requires ~100us)
   
-  // Read 16 bits
+  // Read 16 bits (MSB first)
   for (int i = 15; i >= 0; i--) {
+    // Clock starts low, then goes high
     digitalWrite(TEMP_SCK_PIN, LOW);
     delayMicroseconds(1);
+    digitalWrite(TEMP_SCK_PIN, HIGH);
+    delayMicroseconds(1);
     
+    // Read bit after clock goes high
     if (digitalRead(TEMP_SO_PIN)) {
       data |= (1 << i);
     }
-    
-    digitalWrite(TEMP_SCK_PIN, HIGH);
-    delayMicroseconds(1);
   }
+  
+  // Ensure clock is low after reading
+  digitalWrite(TEMP_SCK_PIN, LOW);
   
   // Pull CS high to end communication
   digitalWrite(TEMP_CS_PIN, HIGH);
   
-  // Check for open circuit (bit 1)
+  // Check for open circuit (bit 2)
   if (data & 0x04) {
 #if DEBUG
     Serial.println("MAX6675: Open circuit detected!");
@@ -94,8 +98,9 @@ void setup() {
   pinMode(TEMP_SCK_PIN, OUTPUT);
   pinMode(TEMP_SO_PIN, INPUT);
   
-  // Set CS high initially
+  // Set CS high and SCK low initially
   digitalWrite(TEMP_CS_PIN, HIGH);
+  digitalWrite(TEMP_SCK_PIN, LOW);
   
 #if DEBUG
   Serial.println("MAX6675 temperature sensor initialized");
@@ -107,10 +112,11 @@ void setup() {
 
 void loop() {
 
-  float sample[MAX_MEASUREMENTS][NUM_AXES];
+  float sample[MAX_MEASUREMENTS];
   float measurements[MAX_MEASUREMENTS];
   float mad[NUM_AXES];
   float mahal;
+  float temperature;
 
   // Timestamps for collecting samples
   static unsigned long timestamp = millis();
@@ -125,38 +131,30 @@ void loop() {
       prev_timestamp = timestamp;
       timestamp = millis();
 
-      // Take sample measurement
-      msa.read();
+      // Read temperature from MAX6675
+      temperature = readMAX6675();
 
-      // Add readings to array
-      sample[i][0] = msa.x_g;
-      sample[i][1] = msa.y_g;
-      sample[i][2] = msa.z_g;
+      // Add temperature reading to array
+      sample[i] = temperature;
 
       // Update sample counter
       i++;
     }
   }
 
-  // For each axis, compute the MAD (scale up by 1.4826)
-  for (int axis = 0; axis < NUM_AXES; axis++) {
-    for (int i = 0; i < MAX_MEASUREMENTS; i++) {
-      measurements[i] = sample[i][axis];
-    }
-    mad[axis] = MAD_SCALE * calc_mad(measurements, MAX_MEASUREMENTS);
+  // Compute the MAD for temperature (scale up by 1.4826)
+  for (int i = 0; i < MAX_MEASUREMENTS; i++) {
+    measurements[i] = sample[i];
   }
+  mad[0] = MAD_SCALE * calc_mad(measurements, MAX_MEASUREMENTS);
 
-  // Print out MAD calculations
+  // Print out MAD calculation
 #if DEBUG
-  Serial.print("MAD: ");
-  for (int axis = 0; axis < NUM_AXES; axis++) {
-    Serial.print(mad[axis], 7);
-    Serial.print(" ");
-  }
-  Serial.println();
+  Serial.print("Temperature MAD: ");
+  Serial.println(mad[0], 7);
 #endif
 
-  // Calculate Mahalanobis distance of normal sample
+  // Calculate Mahalanobis distance of temperature sample
   mahal = mahalanobis(mad, model_mu, *model_inv_cov, model_mu_dim1);
 #if DEBUG
   Serial.print("Mahalanobis distance: ");
